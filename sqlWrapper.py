@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-# Copyright 2016 - 2019 Daniel Edler
+# Copyright 2016 - 2019, 2023 Daniel Edler
 #
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -47,10 +47,9 @@ for dbRow in db.fetchall():
 import sqlite3
 import io
 import types
-import socket # You might comment these lines out if you do not use the external storage of your
-import os     # database adapter.  They are needed to determine a unique filename over the whole cluster.
+# import socket # You might comment these lines out if you do not use the external storage of your
+# import os     # database adapter.  They are needed to determine a unique filename over the whole cluster.
 import time
-import pdb
 import inspect # If callable is given. Save its definition as string instead
 import gzip
 
@@ -148,6 +147,7 @@ class iodb:
                 self.sql.register_adapter(np.int64, int)
                 self.sql.register_adapter(np.int32, int)
                 self.sql.register_adapter(np.int16, int)
+                self.sql.register_adapter(np.bool_, int)
 
                 # How to save a function or method
                 self.sql.register_adapter(types.FunctionType, self._setAdapter_lambda)
@@ -168,6 +168,7 @@ class iodb:
                 self.sql.extensions.register_adapter(np.int64, self.sql.extensions.Int)
                 self.sql.extensions.register_adapter(np.int32, self.sql.extensions.Int)
                 self.sql.extensions.register_adapter(np.int16, self.sql.extensions.Int)
+                self.sql.extensions.register_adapter(np.bool_, self.sql.extensions.Boolean)
 
                 # How to save a function or method
                 self.sql.extensions.register_adapter(types.FunctionType, self._setAdapter_lambda)
@@ -324,7 +325,7 @@ class iodb:
 
         return fname
 
-    def start(self, legacy=False, **kwargs):
+    def start(self, **kwargs):
         """ Establish a connection (con) and create a cursor (cur).  Install numpy adapter
 
         Parameter
@@ -342,11 +343,11 @@ class iodb:
             # the detect_types argument is important
             self.con = self.sql.connect(self._fname, detect_types=self.sql.PARSE_DECLTYPES)
         elif self.driver == "postgre":
-            self._conKwargs = kwargs
             self.con = self.sql.connect(**kwargs)
 
             self._setAdapters(self.storage)
 
+        self._conKwargs = kwargs
         self.cur = self.con.cursor()
 
     def stop(self):
@@ -387,14 +388,18 @@ class iodb:
         """ Almost same as cur.execute """
         try:
             return self.cur.execute(*args, **kwargs)
-        except self.sql.OperationalError as err: # psycopg2 error when server was closed. Try again
-            # TODO is also thrown in many other cases e.g. when a column does not exists
-            print("WARNING:", err)
-            print("NOTE: Try to reconnect after {}s".format(TIME_RECONNECT))
-            time.sleep(TIME_RECONNECT)
-            self.con = self.sql.connect(**self._conKwargs)
-            self.cur = self.con.cursor()
-            return self.cur.execute(*args, **kwargs)
+        except self.sql.OperationalError as err:
+            print(err)
+            print(*args)
+            raise err
+        # except self.sql.OperationalError as err: # psycopg2 error when server was closed. Try again
+        #     # TODO is also thrown in many other cases e.g. when a column does not exists
+        #     print("WARNING:", err)
+        #     print("NOTE: Try to reconnect after {}s".format(TIME_RECONNECT))
+        #     time.sleep(TIME_RECONNECT)
+        #     self.con = self.sql.connect(**self._conKwargs)
+        #     self.cur = self.con.cursor()
+        #     return self.cur.execute(*args, **kwargs)
 
     def fetchone(self, *args, **kwargs):
         """ same as cur.fetchone """
@@ -476,7 +481,7 @@ class iodb:
         """ Depending on the input value (try to) find the appropriate database type.
         This depends on the database driver (sqlite or postgre) """
         # bool(value) is instance of int so first ask if bool(value) is instance of bool
-        if isinstance(value, (bool, np.bool8)):
+        if isinstance(value, (bool, np.bool)):
             if dbdriver == "sqlite":
                 return "INTEGER"
             elif dbdriver == "postgre":
@@ -527,12 +532,12 @@ class iodb:
                 print("WARNING: iodb::detectType:", war)
                 return self.detectType(value[0], dbdriver)
             else:
-                err = "iodb::detectType: Unrecognized type {}\nWithvalue{}".format(
+                err = "iodb::detectType: Unrecognized type '{}'\nWith value: {}".format(
                     type(value), value)
                 raise TypeError(err)
 
         else:
-            err = "iodb::detectType: Unrecognized type {}\nWithvalue{}".format(
+            err = "iodb::detectType: Unrecognized type '{}'\nWith value: {}".format(
                     type(value), value)
             raise TypeError(err)
 
@@ -549,8 +554,50 @@ class iodb:
             parameterNames = []
             for key in keys:
                 valtype = self.detectType(indict[key], self.driver)
-                parameterNames.append(key + " " + valtype)
+                parameterNames.append(f"'{key}' {valtype}")
             return ", ".join(parameterNames)
+
+    def getTableSchema(self, tblname):
+        try:
+            self.execute(f"PRAGMA table_info({tblname})")
+        except sqlite3.OperationalError as err:
+            print(f"Check the View definition if this is one ({tblname}). Is there a faulty column?")
+            raise sqlite3.OperationalError(err)
+            names, types = [], []
+        else:
+            cid, names, types, notnull, dflt_value, pk = list(zip(*self.fetchall()))
+
+        return dict(zip(names, types))
+
+    def getTableNames(self, types=["table"], verbose=False):
+        allTypes = ", ".join([ f"'{i}'" for i in types ])
+        query = f"SELECT tbl_name FROM sqlite_master WHERE type in ({allTypes})"
+        if verbose: print(query)
+
+        self.execute(query)
+        ret = self.fetchall()
+
+        if ret is None:
+            return []
+
+        if len(ret) == 0:
+            return []
+
+        tblnames, = list(zip(*ret))
+        return tblnames
+
+    def getAllTableSchema(self, types=["table"], verbose=False):
+        # Get all tables
+        tblnames = self.getTableNames(types)
+
+        if len(tblnames) == 0:
+            return {}
+
+        out = {}
+        for tblname in tblnames:
+            out[tblname] = self.getTableSchema(tblname)
+
+        return out
 
     def createTable(self, tablename, indict,
                     useTypes=True, save=True, before="", after="", verbose=False,
@@ -605,27 +652,28 @@ class iodb:
         indict : (dict) dictionary in the form {table-column-name: value-or-object}
         save : (optional, bool) if true then commit changes to the database in the ending
         verbose : (optional, bool) print the executed queries. (Good for debugging)
-        binaryDict : (optional, dict) when the storage is external it specifies the filename.
-                     It is in the form {table-column-name: filename}.  In the case of an
-                     empty dictionary a generic unique name is used
+        # binaryDict : (optional, dict) when the storage is external it specifies the filename.
+        #              It is in the form {table-column-name: filename}.  In the case of an
+        #              empty dictionary a generic unique name is used
         returnLastRow : (optional, bool) return the rowid of the newly added row/record
         """
         keys = indict.keys()
         values = [ indict[key] for key in keys ]
+        keys_sqlsafe = [ f"'{i}'" for i in keys ]
 
         # Create a list of binaryDict content (so the file names of the binary files) where the
         # elements are in exactly in the same order of occurence as in keys
-        self.binaryNames = []
-        if len(binaryDict) != 0:
-            if not keys.isdisjoint(binaryDict):
-                for key in keys:
-                    if key in binaryDict:
-                        self.binaryNames.append(binaryDict[key])
+        # self.binaryNames = []
+        # if len(binaryDict) != 0:
+        #     if not keys.isdisjoint(binaryDict):
+        #         for key in keys:
+        #             if key in binaryDict:
+        #                 self.binaryNames.append(binaryDict[key])
 
         if self.driver == "sqlite":
             questionmarks = ", ".join(["?"] * len(keys))
             query = "insert into {0} ({1}) values ({2})".format(
-                                tablename, ", ".join(keys), questionmarks)
+                                tablename, ", ".join(keys_sqlsafe), questionmarks)
 
             if verbose: print(query)
             self.execute(query, values)
@@ -635,7 +683,7 @@ class iodb:
         else:
             nomarks = ", ".join(["%s"] * len(keys))
             query = "insert into {0} ({1}) values ({2}) returning {3}".format(
-                                tablename, ", ".join(keys), nomarks, self._rowid)
+                                tablename, ", ".join(keys_sqlsafe), nomarks, self._rowid)
 
             if verbose: print(query)
             self.execute(query, values)
