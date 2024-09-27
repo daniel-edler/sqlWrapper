@@ -147,7 +147,7 @@ class iodb:
                 self.sql.register_adapter(np.int64, int)
                 self.sql.register_adapter(np.int32, int)
                 self.sql.register_adapter(np.int16, int)
-                self.sql.register_adapter(np.bool_, int)
+                #self.sql.register_adapter(np.bool_, int)
 
                 # How to save a function or method
                 self.sql.register_adapter(types.FunctionType, self._setAdapter_lambda)
@@ -168,7 +168,7 @@ class iodb:
                 self.sql.extensions.register_adapter(np.int64, self.sql.extensions.Int)
                 self.sql.extensions.register_adapter(np.int32, self.sql.extensions.Int)
                 self.sql.extensions.register_adapter(np.int16, self.sql.extensions.Int)
-                self.sql.extensions.register_adapter(np.bool_, self.sql.extensions.Boolean)
+                #self.sql.extensions.register_adapter(np.bool_, self.sql.extensions.Boolean)
 
                 # How to save a function or method
                 self.sql.extensions.register_adapter(types.FunctionType, self._setAdapter_lambda)
@@ -481,7 +481,7 @@ class iodb:
         """ Depending on the input value (try to) find the appropriate database type.
         This depends on the database driver (sqlite or postgre) """
         # bool(value) is instance of int so first ask if bool(value) is instance of bool
-        if isinstance(value, (bool, np.bool)):
+        if isinstance(value, bool):
             if dbdriver == "sqlite":
                 return "INTEGER"
             elif dbdriver == "postgre":
